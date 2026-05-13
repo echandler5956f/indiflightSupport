@@ -9,3 +9,5 @@ __pycache__/
 #indiflight specific
 eeprom.bin
 logs*/
+.venv/
+.native-bin/

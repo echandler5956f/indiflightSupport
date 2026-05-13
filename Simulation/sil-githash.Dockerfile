@@ -19,6 +19,11 @@ FROM ubuntu:22.04
 
 RUN apt-get update && \
     apt-get --no-install-recommends install -y \
+        ca-certificates \
+    && apt-get clean
+
+RUN apt-get update && \
+    apt-get --no-install-recommends install -y \
         build-essential \
         gcc-11 \
         python3 \
