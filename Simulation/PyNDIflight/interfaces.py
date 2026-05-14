@@ -127,6 +127,12 @@ class IndiflightSITLWrapper():
     def sendMocap(self):
         self.mockup.sendMocap( self.uav.xI, self.uav.vI, self.uav.q )
 
+    def sendPseudoControl(self, spf, alpha, active=True):
+        self.mockup.sendPseudoControl(spf, alpha, active)
+
+    def disablePseudoControl(self):
+        self.mockup.disablePseudoControl()
+
     def sendAttRateSpfSetpoint(self, att, rate, spf, control_attitude=True, track_yaw=True, enable=True):
         self.mockup.sendAttRateSpfSetpoint(att, rate, spf, control_attitude, track_yaw, enable)
 
