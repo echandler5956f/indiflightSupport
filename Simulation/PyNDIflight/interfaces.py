@@ -133,6 +133,12 @@ class IndiflightSITLWrapper():
     def disablePseudoControl(self):
         self.mockup.disablePseudoControl()
 
+    def sendLegacyTrpyCommand(self, throttle_d, rate, active=True):
+        self.mockup.sendLegacyTrpyCommand(throttle_d, rate, active)
+
+    def disableLegacyTrpyCommand(self):
+        self.mockup.disableLegacyTrpyCommand()
+
     def sendAttRateSpfSetpoint(self, att, rate, spf, control_attitude=True, track_yaw=True, enable=True):
         self.mockup.sendAttRateSpfSetpoint(att, rate, spf, control_attitude, track_yaw, enable)
 
