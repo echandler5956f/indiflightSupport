@@ -8,6 +8,8 @@ pi_protocol_root="${PI_PROTOCOL_ROOT:-/home/quant/research/Indiflight/pi-protoco
 local_mk="${indiflight_root}/make/local.mk"
 config_mk="${simulation_dir}/config/mockupConfig.mk"
 support_venv="${simulation_dir}/../.venv"
+mockup_debug="${MOCKUP_DEBUG:-}"
+mockup_force_rebuild="${MOCKUP_FORCE_REBUILD:-1}"
 
 if [[ ! -d "${indiflight_root}" ]]; then
   echo "Missing custom Indiflight checkout: ${indiflight_root}" >&2
@@ -38,7 +40,18 @@ if [[ -x "${support_venv}/bin/python3" ]]; then
   export PATH="${support_venv}/bin:${PATH}"
 fi
 
-make -C "${indiflight_root}" TARGET=MOCKUP DEBUG=GDB
+make_args=(TARGET=MOCKUP DEBUG="${mockup_debug}")
+if [[ "${mockup_force_rebuild}" != "0" ]]; then
+  make_args+=(-B)
+fi
+
+if [[ -n "${mockup_debug}" ]]; then
+  echo "Building MOCKUP with DEBUG=${mockup_debug}"
+else
+  echo "Building MOCKUP release build"
+fi
+
+make -C "${indiflight_root}" "${make_args[@]}"
 
 so_path="${indiflight_root}/obj/main/indiflight_MOCKUP.so"
 if [[ ! -f "${so_path}" ]]; then
