@@ -151,15 +151,12 @@ class IndiflightSITLWrapper():
     def getStateEstimate(self):
         return self.mockup.getStateEstimate()
 
+    def getEagleStates(self):
+        return self.mockup.getEagleStates()
+
     def receive(self):
-        if hasattr(self.mockup, "getMotorCommandsInto"):
-            n = self.mockup.getMotorCommandsInto(self.uav.inputs)
-            np.clip(self.uav.inputs[:n], 0., 1., out=self.uav.inputs[:n])
-        else:
-            inputs = self.mockup.getMotorCommands()
-            n = min(len(inputs), len(self.uav.inputs))
-            self.uav.inputs[:n] = inputs[:n]
-            np.clip(self.uav.inputs, 0., 1., out=self.uav.inputs)
+        n = self.mockup.getMotorCommandsInto(self.uav.inputs)
+        np.clip(self.uav.inputs[:n], 0., 1., out=self.uav.inputs[:n])
 
     def tick(self, dt):
         self.mockup.tick( int(dt*1e6) )
