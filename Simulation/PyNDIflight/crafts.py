@@ -59,47 +59,40 @@ def _matvec3(A, x0, x1, x2):
 
 
 @njit(cache=True)
-def _multirotor_tick_fast(
-    inputs,
-    rotor_velocity,
-    rotor_r,
-    rotor_axis,
-    rotor_dir,
-    rotor_k,
-    rotor_cm,
-    rotor_tau,
-    rotor_wmax,
-    rotor_kesc,
-    rotor_izz,
-    m,
-    I,
-    Iinv,
-    xI,
-    vI,
-    fspB,
-    q,
-    wDotB,
-    wB,
-    FthrowI,
-    MthrowB,
-    throw_time,
-    throw_duration,
-    dt,
+def _multirotor_derivative(
+    s, inputs, rotor_r, rotor_axis, rotor_dir, rotor_k, rotor_cm, rotor_tau, rotor_wmax, rotor_kesc, rotor_izz,
+    m, I, Iinv, FextI, MextB, external, drag_linear, drag_quadratic, gravity, fspB, wDotB,
 ):
+    # The derivative of s = [rotor speeds (n), wB (3), q (4, scalar first), vI (3), xI (3)] under the rotors, ground
+    # contact, the external wrench while it acts and drag, with the motor commands held; writes the specific force and
+    # the angular acceleration at s.
+    n = rotor_r.shape[0]
+    ds = np.zeros_like(s)
+    wb0 = s[n]
+    wb1 = s[n + 1]
+    wb2 = s[n + 2]
+    qn = np.sqrt(s[n + 3] ** 2 + s[n + 4] ** 2 + s[n + 5] ** 2 + s[n + 6] ** 2)
+    q = np.empty(4)
+    q[0] = s[n + 3] / qn
+    q[1] = s[n + 4] / qn
+    q[2] = s[n + 5] / qn
+    q[3] = s[n + 6] / qn
+    v0 = s[n + 7]
+    v1 = s[n + 8]
+    v2 = s[n + 9]
+    z = s[n + 12]
     Fx = 0.0
     Fy = 0.0
     Fz = 0.0
     Mx = 0.0
     My = 0.0
     Mz = 0.0
-
-    for i in range(rotor_velocity.shape[0]):
-        u = inputs[i]
+    for i in range(n):
+        u = np.float64(inputs[i])
         wc = rotor_wmax[i] * np.sqrt(rotor_kesc[i] * u * u + (1.0 - rotor_kesc[i]) * u)
-        w_dot = (wc - rotor_velocity[i]) / rotor_tau[i]
-        w = rotor_velocity[i] + dt * w_dot
-        rotor_velocity[i] = w
-
+        w = s[i]
+        w_dot = (wc - w) / rotor_tau[i]
+        ds[i] = w_dot
         ax = rotor_axis[i, 0]
         ay = rotor_axis[i, 1]
         az = rotor_axis[i, 2]
@@ -107,140 +100,140 @@ def _multirotor_tick_fast(
         f0 = ax * thrust
         f1 = ay * thrust
         f2 = az * thrust
-
         Fx += f0
         Fy += f1
         Fz += f2
-
         rx = rotor_r[i, 0]
         ry = rotor_r[i, 1]
         rz = rotor_r[i, 2]
         mx = ry * f2 - rz * f1
         my = rz * f0 - rx * f2
         mz = rx * f1 - ry * f0
-
         drag_scale = rotor_dir[i] * rotor_cm[i]
         mx -= drag_scale * f0
         my -= drag_scale * f1
         mz -= drag_scale * f2
-
         sx = ax * rotor_dir[i]
         sy = ay * rotor_dir[i]
         sz = az * rotor_dir[i]
         lx = rotor_izz[i] * w * sx
         ly = rotor_izz[i] * w * sy
         lz = rotor_izz[i] * w * sz
-        dldtx = rotor_izz[i] * w_dot * sx
-        dldty = rotor_izz[i] * w_dot * sy
-        dldtz = rotor_izz[i] * w_dot * sz
-        cx = wB[1] * lz - wB[2] * ly
-        cy = wB[2] * lx - wB[0] * lz
-        cz = wB[0] * ly - wB[1] * lx
-        mx -= dldtx + cx
-        my -= dldty + cy
-        mz -= dldtz + cz
-
+        mx -= rotor_izz[i] * w_dot * sx + (wb1 * lz - wb2 * ly)
+        my -= rotor_izz[i] * w_dot * sy + (wb2 * lx - wb0 * lz)
+        mz -= rotor_izz[i] * w_dot * sz + (wb0 * ly - wb1 * lx)
         Mx += mx
         My += my
         Mz += mz
-
-    qinv0 = -q[0]
-    qinv = np.empty(4, dtype=np.float32)
-    qinv[0] = qinv0
+    qinv = np.empty(4)
+    qinv[0] = -q[0]
     qinv[1] = q[1]
     qinv[2] = q[2]
     qinv[3] = q[3]
-
-    if xI[2] > 0.0:
-        frx, fry, frz = _quat_rotate(qinv, 0.0, 0.0, -xI[2])
+    if z > 0.0:
+        frx, fry, frz = _quat_rotate(qinv, 0.0, 0.0, -z)
         Fx += 1000.0 * m * frx
         Fy += 1000.0 * m * fry
         Fz += 1000.0 * m * frz
-
-        damping = 100.0 if vI[2] > 0.0 else 1.0
-        fvx, fvy, fvz = _quat_rotate(qinv, -vI[0], -vI[1], -vI[2])
+        damping = 100.0 if v2 > 0.0 else 1.0
+        fvx, fvy, fvz = _quat_rotate(qinv, -v0, -v1, -v2)
         Fx += damping * m * fvx
         Fy += damping * m * fvy
         Fz += damping * m * fvz
-
-        sign_q = 1.0 if qinv0 >= 0.0 else -1.0
+        sign_q = 1.0 if qinv[0] >= 0.0 else -1.0
         ix, iy, iz = _matvec3(I, sign_q * qinv[1], sign_q * qinv[2], sign_q * qinv[3])
         Mx += 1000.0 * ix
         My += 1000.0 * iy
         Mz += 1000.0 * iz
-
-        dx, dy, dz = _matvec3(I, -wB[0], -wB[1], -wB[2])
+        dx, dy, dz = _matvec3(I, -wb0, -wb1, -wb2)
         Mx += 100.0 * dx
         My += 100.0 * dy
         Mz += 100.0 * dz
-
-    throw_time += dt
-    if throw_time > 0.0 and throw_time <= throw_duration:
-        tfx, tfy, tfz = _quat_rotate(qinv, FthrowI[0], FthrowI[1], FthrowI[2])
+    if external:
+        tfx, tfy, tfz = _quat_rotate(qinv, FextI[0], FextI[1], FextI[2])
         Fx += tfx
         Fy += tfy
         Fz += tfz
-        Mx += MthrowB[0]
-        My += MthrowB[1]
-        Mz += MthrowB[2]
+        Mx += MextB[0]
+        My += MextB[1]
+        Mz += MextB[2]
+    if (
+        drag_linear[0] != 0.0 or drag_linear[1] != 0.0 or drag_linear[2] != 0.0
+        or drag_quadratic[0] != 0.0 or drag_quadratic[1] != 0.0 or drag_quadratic[2] != 0.0
+    ):
+        vbx, vby, vbz = _quat_rotate(qinv, v0, v1, v2)
+        Fx += -m * (drag_linear[0] + drag_quadratic[0] * abs(vbx)) * vbx
+        Fy += -m * (drag_linear[1] + drag_quadratic[1] * abs(vby)) * vby
+        Fz += -m * (drag_linear[2] + drag_quadratic[2] * abs(vbz)) * vbz
+    iw0, iw1, iw2 = _matvec3(I, wb0, wb1, wb2)
+    wd0, wd1, wd2 = _matvec3(Iinv, Mx - (wb1 * iw2 - wb2 * iw1), My - (wb2 * iw0 - wb0 * iw2), Mz - (wb0 * iw1 - wb1 * iw0))
+    ds[n] = wd0
+    ds[n + 1] = wd1
+    ds[n + 2] = wd2
+    hx = 0.5 * wb0
+    hy = 0.5 * wb1
+    hz = 0.5 * wb2
+    qw = s[n + 3]
+    qx = s[n + 4]
+    qy = s[n + 5]
+    qz = s[n + 6]
+    ds[n + 3] = -hx * qx - hy * qy - hz * qz
+    ds[n + 4] = hx * qw + hz * qy - hy * qz
+    ds[n + 5] = hy * qw - hz * qx + hx * qz
+    ds[n + 6] = hz * qw + hy * qx - hx * qy
+    fb0 = Fx / m
+    fb1 = Fy / m
+    fb2 = Fz / m
+    a0, a1, a2 = _quat_rotate(q, fb0, fb1, fb2)
+    ds[n + 7] = a0
+    ds[n + 8] = a1
+    ds[n + 9] = a2 + gravity
+    ds[n + 10] = v0
+    ds[n + 11] = v1
+    ds[n + 12] = v2
+    fspB[0] = fb0
+    fspB[1] = fb1
+    fspB[2] = fb2
+    wDotB[0] = wd0
+    wDotB[1] = wd1
+    wDotB[2] = wd2
+    return ds
 
-    iw0, iw1, iw2 = _matvec3(I, wB[0], wB[1], wB[2])
-    cx = wB[1] * iw2 - wB[2] * iw1
-    cy = wB[2] * iw0 - wB[0] * iw2
-    cz = wB[0] * iw1 - wB[1] * iw0
-    rhs0 = Mx - cx
-    rhs1 = My - cy
-    rhs2 = Mz - cz
-    wdot0, wdot1, wdot2 = _matvec3(Iinv, rhs0, rhs1, rhs2)
-    wDotB[0] = wdot0
-    wDotB[1] = wdot1
-    wDotB[2] = wdot2
 
-    wx = 0.5 * wB[0]
-    wy = 0.5 * wB[1]
-    wz = 0.5 * wB[2]
-    qw = q[0]
-    qx = q[1]
-    qy = q[2]
-    qz = q[3]
-    qdot0 = -wx * qx - wy * qy - wz * qz
-    qdot1 = wx * qw + wz * qy - wy * qz
-    qdot2 = wy * qw - wz * qx + wx * qz
-    qdot3 = wz * qw + wy * qx - wx * qy
-
-    fspB[0] = Fx / m
-    fspB[1] = Fy / m
-    fspB[2] = Fz / m
-
-    vdot0, vdot1, vdot2 = _quat_rotate(q, fspB[0], fspB[1], fspB[2])
-    vdot2 += GRAVITY
-
-    xdot0 = vI[0]
-    xdot1 = vI[1]
-    xdot2 = vI[2]
-
-    wB[0] += dt * wdot0
-    wB[1] += dt * wdot1
-    wB[2] += dt * wdot2
-
-    q[0] += dt * qdot0
-    q[1] += dt * qdot1
-    q[2] += dt * qdot2
-    q[3] += dt * qdot3
-    q_norm_inv = 1.0 / np.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
-    q[0] *= q_norm_inv
-    q[1] *= q_norm_inv
-    q[2] *= q_norm_inv
-    q[3] *= q_norm_inv
-
-    vI[0] += dt * vdot0
-    vI[1] += dt * vdot1
-    vI[2] += dt * vdot2
-    xI[0] += dt * xdot0
-    xI[1] += dt * xdot1
-    xI[2] += dt * xdot2
-
-    return throw_time
+@njit(cache=True)
+def _multirotor_tick(
+    inputs, rotor_velocity, wB, q, vI, xI, fspB, wDotB, rotor_r, rotor_axis, rotor_dir, rotor_k, rotor_cm, rotor_tau,
+    rotor_wmax, rotor_kesc, rotor_izz, m, I, Iinv, FextI, MextB, external, drag_linear, drag_quadratic, gravity, dt,
+    substeps,
+):
+    # Classical Runge-Kutta steps over the tick with the motor commands held; fspB and wDotB, which the IMU reads, at
+    # its end.
+    n = rotor_velocity.shape[0]
+    s = np.concatenate((rotor_velocity, wB, q, vI, xI))
+    h = dt / substeps
+    for _ in range(substeps):
+        k1 = _multirotor_derivative(s, inputs, rotor_r, rotor_axis, rotor_dir, rotor_k, rotor_cm, rotor_tau, rotor_wmax,
+                                    rotor_kesc, rotor_izz, m, I, Iinv, FextI, MextB, external, drag_linear,
+                                    drag_quadratic, gravity, fspB, wDotB)
+        k2 = _multirotor_derivative(s + 0.5 * h * k1, inputs, rotor_r, rotor_axis, rotor_dir, rotor_k, rotor_cm,
+                                    rotor_tau, rotor_wmax, rotor_kesc, rotor_izz, m, I, Iinv, FextI, MextB, external,
+                                    drag_linear, drag_quadratic, gravity, fspB, wDotB)
+        k3 = _multirotor_derivative(s + 0.5 * h * k2, inputs, rotor_r, rotor_axis, rotor_dir, rotor_k, rotor_cm,
+                                    rotor_tau, rotor_wmax, rotor_kesc, rotor_izz, m, I, Iinv, FextI, MextB, external,
+                                    drag_linear, drag_quadratic, gravity, fspB, wDotB)
+        k4 = _multirotor_derivative(s + h * k3, inputs, rotor_r, rotor_axis, rotor_dir, rotor_k, rotor_cm, rotor_tau,
+                                    rotor_wmax, rotor_kesc, rotor_izz, m, I, Iinv, FextI, MextB, external, drag_linear,
+                                    drag_quadratic, gravity, fspB, wDotB)
+        s += h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        s[n + 3:n + 7] /= np.sqrt(s[n + 3] ** 2 + s[n + 4] ** 2 + s[n + 5] ** 2 + s[n + 6] ** 2)
+    rotor_velocity[:] = s[:n]
+    wB[:] = s[n:n + 3]
+    q[:] = s[n + 3:n + 7]
+    vI[:] = s[n + 7:n + 10]
+    xI[:] = s[n + 10:]
+    _multirotor_derivative(s, inputs, rotor_r, rotor_axis, rotor_dir, rotor_k, rotor_cm, rotor_tau, rotor_wmax,
+                           rotor_kesc, rotor_izz, m, I, Iinv, FextI, MextB, external, drag_linear, drag_quadratic,
+                           gravity, fspB, wDotB)
 
 
 @njit(cache=True)
@@ -301,23 +294,32 @@ class Rotor:
         self.M -= rotatingMassTorques(self.Izz, self.axis*self.dir, self.w, wDot, Omega)
 
 class MultiRotor:
-    def __init__(self):
+    def __init__(self, gravity=GRAVITY):
+        if not np.isfinite(gravity) or gravity <= 0.0:
+            raise ValueError("gravity must be finite and positive")
         self.rotors = []
+        self.gravity = float(gravity)
         self.m = 1.
         self.I = np.eye(3, dtype=np.float32)
         self.Iinv = np.eye(3, dtype=np.float32)
-        self.xI = np.array([0., 0., 0.], dtype=np.float32)
-        self.vI = np.array([0., 0., 0.], dtype=np.float32)
-        self.fspB = np.array([0., 0., 0.], dtype=np.float32)
-        self.q = np.array([1., 0., 0., 0.], dtype=np.float32)
-        self.wDotB = np.array([0., 0., 0.], dtype=np.float32)
-        self.wB = np.array([0., 0., 0.], dtype=np.float32)
+        # The state is double precision: single precision's rounding of each 0.5 ms step accumulates over a flight to
+        # tens of micrometres, the scale of the tracking errors flown.
+        self.xI = np.array([0., 0., 0.], dtype=np.float64)
+        self.vI = np.array([0., 0., 0.], dtype=np.float64)
+        self.fspB = np.array([0., 0., 0.], dtype=np.float64)
+        self.q = np.array([1., 0., 0., 0.], dtype=np.float64)
+        self.wDotB = np.array([0., 0., 0.], dtype=np.float64)
+        self.wB = np.array([0., 0., 0.], dtype=np.float64)
 
         self.throw_time = +np.inf
         self.throw_duration = 0.
         self.FthrowI = np.array([0., 0., 0.], dtype=np.float32)
         self.MthrowB = np.array([0., 0., 0.], dtype=np.float32)
+        self.dragLinearB = np.zeros(3, dtype=np.float32)
+        self.dragQuadraticB = np.zeros(3, dtype=np.float32)
         self.use_fast_tick = True
+        # Runge-Kutta steps per tick of the fast path: two hold a 4 s hover within 0.2 nm of sixteen.
+        self.substeps = 2
 
     def __repr__(self):
         qWrong = np.zeros_like(self.q)
@@ -328,7 +330,7 @@ class MultiRotor:
         return f"MultiRotor( n={len(self.rotors)}, x={self.xI}m, v={self.vI}m/s, roll={eulers[2]}deg, pitch={eulers[1]}deg, yaw={eulers[0]}deg )"
 
     def throw(self, height=3.5, acc=45., wB=[0., 0., 0.], vHorz=[0., 0.], at_time=0.):
-        force = self.m * ( acc + GRAVITY )
+        force = self.m * ( acc + self.gravity )
 
         # solve duration:
         # 
@@ -339,7 +341,7 @@ class MultiRotor:
         # 
         # then, solve  height == sT + sC  for time
         self.throw_time = -at_time
-        self.throw_duration = np.sqrt( 2. * height / (acc * (1. + acc / GRAVITY)) )
+        self.throw_duration = np.sqrt( 2. * height / (acc * (1. + acc / self.gravity)) )
 
         self.FthrowI[:2] = self.m * np.asarray(vHorz) / self.throw_duration
         self.FthrowI[2] = -force
@@ -353,7 +355,7 @@ class MultiRotor:
     def addRotor(self, rotor):
         self.rotors.append(rotor)
         self.n = len(self.rotors)
-        self.rotorVelocity = np.zeros(self.n, np.float32)
+        self.rotorVelocity = np.zeros(self.n, np.float64)
         self.inputs = np.zeros(self.n, np.float32)
         self._refreshRotorCache()
         self._warmFastTick()
@@ -372,41 +374,15 @@ class MultiRotor:
     def _warmFastTick(self):
         if not self.use_fast_tick or not self.rotors:
             return
-        self.throw_time = _multirotor_tick_fast(
-            self.inputs,
-            self.rotorVelocity,
-            self._rotor_r,
-            self._rotor_axis,
-            self._rotor_dir,
-            self._rotor_k,
-            self._rotor_cm,
-            self._rotor_tau,
-            self._rotor_wmax,
-            self._rotor_kesc,
-            self._rotor_izz,
-            self.m,
-            self.I,
-            self.Iinv,
-            self.xI,
-            self.vI,
-            self.fspB,
-            self.q,
-            self.wDotB,
-            self.wB,
-            self.FthrowI,
-            self.MthrowB,
-            self.throw_time,
-            self.throw_duration,
-            0.0,
-        )
+        self._fastTick(0.0)
 
     def setPose(self, x=[0., 0., 0.], q=[1., 0., 0., 0.]):
-        self.xI[:] = np.asarray(x, dtype=np.float32)
-        self.q[:] = np.asarray(q, dtype=np.float32)
+        self.xI[:] = np.asarray(x, dtype=np.float64)
+        self.q[:] = np.asarray(q, dtype=np.float64)
 
     def setTwist(self, v=[0., 0., 0.], w=[0., 0., 0.]):
-        self.vI[:] = np.asarray(v, dtype=np.float32)
-        self.wB[:] = np.asarray(w, dtype=np.float32)
+        self.vI[:] = np.asarray(v, dtype=np.float64)
+        self.wB[:] = np.asarray(w, dtype=np.float64)
 
     def setExternalForceInInertialFrame(self, F):
         self.FthrowI[:] = F
@@ -490,44 +466,29 @@ class MultiRotor:
             A = Nr.T @ G1[:3, :].T @ G1[:3, :] @ Nr
             v, V = np.linalg.eig(A)
             # calculate most effeicient hover allocation with 1.1 thrust to weight margin
-            ustar = ( 1.1 * 9.81 / np.sqrt(max(v)) ) * (Nr @ V[:, np.argmax(v)])
+            ustar = ( 1.1 * self.gravity / np.sqrt(max(v)) ) * (Nr @ V[:, np.argmax(v)])
             if not ( ((ustar >= 0.) & (ustar <= 1.)).all() or ((ustar >= -1.) & (ustar <= 0.)).all()):
                 print(f"\nWARNING: generated craft does not have enough thrust-to-weight to hover without rotation. Double check rotation directions")
                 return False
 
         return True
 
+    def _fastTick(self, dt):
+        self.throw_time += dt
+        _multirotor_tick(
+            self.inputs, self.rotorVelocity, self.wB, self.q, self.vI, self.xI, self.fspB, self.wDotB, self._rotor_r,
+            self._rotor_axis, self._rotor_dir, self._rotor_k, self._rotor_cm, self._rotor_tau, self._rotor_wmax,
+            self._rotor_kesc, self._rotor_izz, self.m, self.I, self.Iinv, self.FthrowI, self.MthrowB,
+            0. < self.throw_time <= self.throw_duration, self.dragLinearB, self.dragQuadraticB, self.gravity, dt,
+            self.substeps,
+        )
+        for i, rotor in enumerate(self.rotors):
+            rotor.w = float(self.rotorVelocity[i])
+            rotor.F[:] = rotor.axis * rotor.k * rotor.w * rotor.w
+
     def tick(self, dt):
         if self.use_fast_tick and len(self.rotors) == len(self.inputs):
-            self.throw_time = _multirotor_tick_fast(
-                self.inputs,
-                self.rotorVelocity,
-                self._rotor_r,
-                self._rotor_axis,
-                self._rotor_dir,
-                self._rotor_k,
-                self._rotor_cm,
-                self._rotor_tau,
-                self._rotor_wmax,
-                self._rotor_kesc,
-                self._rotor_izz,
-                self.m,
-                self.I,
-                self.Iinv,
-                self.xI,
-                self.vI,
-                self.fspB,
-                self.q,
-                self.wDotB,
-                self.wB,
-                self.FthrowI,
-                self.MthrowB,
-                self.throw_time,
-                self.throw_duration,
-                dt,
-            )
-            for i, rotor in enumerate(self.rotors):
-                rotor.w = float(self.rotorVelocity[i])
+            self._fastTick(dt)
             return
 
         F = np.zeros(3, dtype=np.float32)
@@ -554,10 +515,14 @@ class MultiRotor:
             F += quatRotate( qInv, self.FthrowI )
             M += self.MthrowB
 
+        if np.any(self.dragLinearB != 0.0) or np.any(self.dragQuadraticB != 0.0):
+            vB = quatRotate(qInv, self.vI)
+            F += -self.m * (self.dragLinearB + self.dragQuadraticB * np.abs(vB)) * vB
+
         self.wDotB[:] = angularRateDerivative( self.wB, M, self.I, self.Iinv )
         qDot = quaternionDerivative( self.q, self.wB )
         self.fspB[:] = F / self.m
-        vDot = quatRotate( self.q, self.fspB )  +  np.array([0., 0., GRAVITY])
+        vDot = quatRotate( self.q, self.fspB )  +  np.array([0., 0., self.gravity])
         xDot = self.vI
 
         self.wB += dt * self.wDotB

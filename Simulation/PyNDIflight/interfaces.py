@@ -127,17 +127,11 @@ class IndiflightSITLWrapper():
     def sendMocap(self):
         self.mockup.sendMocap( self.uav.xI, self.uav.vI, self.uav.q )
 
-    def sendPseudoControl(self, spf, alpha, active=True):
-        self.mockup.sendPseudoControl(spf, alpha, active)
+    def sendTrpyCommand(self, throttle_d, rate, active=True):
+        self.mockup.sendTrpyCommand(throttle_d, rate, active)
 
-    def disablePseudoControl(self):
-        self.mockup.disablePseudoControl()
-
-    def sendLegacyTrpyCommand(self, throttle_d, rate, active=True):
-        self.mockup.sendLegacyTrpyCommand(throttle_d, rate, active)
-
-    def disableLegacyTrpyCommand(self):
-        self.mockup.disableLegacyTrpyCommand()
+    def disableTrpyCommand(self):
+        self.mockup.disableTrpyCommand()
 
     def sendAttRateSpfSetpoint(self, att, rate, spf, control_attitude=True, track_yaw=True, enable=True):
         self.mockup.sendAttRateSpfSetpoint(att, rate, spf, control_attitude, track_yaw, enable)
@@ -153,6 +147,9 @@ class IndiflightSITLWrapper():
 
     def getEagleStates(self):
         return self.mockup.getEagleStates()
+
+    def getRateControlSetpoint(self):
+        return self.mockup.getRateControlSetpoint()
 
     def receive(self):
         n = self.mockup.getMotorCommandsInto(self.uav.inputs)
